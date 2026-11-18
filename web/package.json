@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@capacitor/core": "^6.2.3",
     "jsqr": "^1.4.0",
     "next": "^14.2.35",
     "qrcode": "^1.5.4",
@@ -18,6 +19,8 @@
     "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
+    "@capacitor/android": "^6.2.3",
+    "@capacitor/cli": "^6.2.3",
     "@types/node": "20.16.11",
     "@types/qrcode": "^1.5.5",
     "@types/react": "18.3.11",
