@@ -1,0 +1,10 @@
+{
+  "name": "The Collapse",
+  "short_name": "Collapse",
+  "description": "Offline scavenging, quests and trades. Share directly with nearby players.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f3efe7",
+  "theme_color": "#9a4a23",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
