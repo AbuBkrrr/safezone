@@ -13,7 +13,8 @@ export const PACK_NAME = "collapse-content";
 export const KEYRING_NAME = "collapse-keyring";
 export const MAX_KEYS = 3;
 
-export interface Pack { name: typeof PACK_NAME; version: number; issued: number; quests: QuestDef[]; screens: ScreenDef[] }
+export interface VideoDef { id: string; title: string; size: number; sha256: string; chunkSize: number; chunkHashes: string[] }
+export interface Pack { name: typeof PACK_NAME; version: number; issued: number; quests: QuestDef[]; screens: ScreenDef[]; videos?: VideoDef[] }
 export interface SignedPack { pack: Pack; sig: string }
 export interface Keyring { name: typeof KEYRING_NAME; version: number; keys: string[] }
 export interface SignedKeyring { keyring: Keyring; sig: string }
@@ -46,7 +47,13 @@ export function verifyPack(sp: SignedPack, installedVersion: number, trusted: st
     const quests = p.quests ?? [];
     const screens = p.screens ?? [];
     if (quests.length > 100 || screens.length > 50) return { ok: false, reason: "pack too large" };
-    if (quests.length + screens.length === 0) return { ok: false, reason: "empty pack" };
+    const videos = p.videos ?? [];
+    if (videos.length > 20) return { ok: false, reason: "too many videos" };
+    for (const v of videos) {
+      const r = validateVideoDef(v);
+      if (!r.ok) return r;
+    }
+    if (quests.length + screens.length + videos.length === 0) return { ok: false, reason: "empty pack" };
     const qids = new Set<string>();
     for (const q of quests) {
       const v = validateQuestDef(q);
@@ -65,6 +72,20 @@ export function verifyPack(sp: SignedPack, installedVersion: number, trusted: st
   } catch {
     return { ok: false, reason: "malformed pack" };
   }
+}
+
+const HEX64 = /^[0-9a-f]{64}$/;
+const MAX_VIDEO = 50 * 1024 * 1024;
+/** Same rules as VideoStore.validate on the phone: size, chunk size, and one hash per piece. */
+export function validateVideoDef(v: VideoDef): { ok: true } | { ok: false; reason: string } {
+  if (!v || typeof v.id !== "string" || !/^[a-z0-9-]{1,40}$/.test(v.id)) return { ok: false, reason: "bad video id" };
+  if (typeof v.title !== "string" || !v.title || v.title.length > 80) return { ok: false, reason: "bad video title" };
+  if (!Number.isInteger(v.size) || v.size < 1 || v.size > MAX_VIDEO) return { ok: false, reason: "video size out of range" };
+  if (!HEX64.test(v.sha256)) return { ok: false, reason: "bad video hash" };
+  if (!Number.isInteger(v.chunkSize) || v.chunkSize < 4096 || v.chunkSize > 65536) return { ok: false, reason: "bad chunk size" };
+  const n = Math.ceil(v.size / v.chunkSize);
+  if (!Array.isArray(v.chunkHashes) || v.chunkHashes.length !== n || v.chunkHashes.some((h) => !HEX64.test(h))) return { ok: false, reason: "bad chunk hashes" };
+  return { ok: true };
 }
 
 /** Verifies a keyring: a new trusted set, signed by a currently trusted key, with a newer version. */

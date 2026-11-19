@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import nacl from "tweetnacl";
 import { QUESTS } from "../lib/seed";
@@ -108,5 +109,28 @@ describe("pack delivery over the DTN", () => {
     sync(sm, mId, sr, R, NOW + 180);
     expect(sr.bundles[junk.id]).toBeUndefined();
     void keyringBundle;
+  });
+});
+
+describe("video packs", () => {
+  const maint = keypair();
+  const data = new Uint8Array(40000).map((_, i) => (i * 31) & 255);
+  const sha = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
+  const cs = 16384;
+  const hashes = [0, 1, 2].map((i) => sha(data.subarray(i * cs, (i + 1) * cs)));
+  const video = { id: "clip-1", title: "Clip", size: data.length, sha256: sha(data), chunkSize: cs, chunkHashes: hashes };
+
+  it("accepts a video-only pack and a video screen block", () => {
+    const sp = signPack(maint.sec, { name: PACK_NAME, version: 1, issued: NOW, quests: [], screens: [{ id: "s1", title: "Clip", blocks: [{ type: "video", videoId: "clip-1" }] }], videos: [video] });
+    expect(verifyPack(sp, 0, [maint.pub])).toEqual({ ok: true });
+  });
+  it("refuses a video whose piece hashes do not match its size", () => {
+    const bad = { ...video, chunkHashes: hashes.slice(1) };
+    const sp = signPack(maint.sec, { name: PACK_NAME, version: 1, issued: NOW, quests: [], screens: [], videos: [bad] });
+    expect(verifyPack(sp, 0, [maint.pub]).ok).toBe(false);
+  });
+  it("refuses an unsigned change to a video", () => {
+    const sp = signPack(maint.sec, { name: PACK_NAME, version: 1, issued: NOW, quests: [], screens: [], videos: [video] });
+    expect(verifyPack({ ...sp, pack: { ...sp.pack, videos: [{ ...video, sha256: "00".repeat(32) }] } }, 0, [maint.pub]).ok).toBe(false);
   });
 });

@@ -5,7 +5,8 @@ export type Block =
   | { type: "text"; text: string }
   | { type: "list"; items: string[] }
   | { type: "quest"; questId: string }
-  | { type: "link"; label: string; screenId: string };
+  | { type: "link"; label: string; screenId: string }
+  | { type: "video"; videoId: string };
 
 export interface ScreenDef {
   id: string;
@@ -37,6 +38,9 @@ export function validateScreen(s: unknown): { ok: true; def: ScreenDef } | { ok:
         if (typeof l.label !== "string" || !l.label || l.label.length > 60) return { ok: false, reason: `bad link label in ${d.id}` };
         break;
       }
+      case "video":
+        if (typeof (b as { videoId?: unknown }).videoId !== "string" || !ID.test((b as { videoId: string }).videoId)) return { ok: false, reason: `bad video link in ${d.id}` };
+        break;
       default:
         return { ok: false, reason: `unknown block type in ${d.id}` };
     }

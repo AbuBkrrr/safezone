@@ -3,11 +3,13 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { activeScreens } from "@/lib/content";
 import type { Block, ScreenDef } from "@/lib/screens";
+import { VideoBlock } from "@/components/VideoBlock";
 
 // Screens from packs. ?id= shows one screen. Blocks are drawn with fixed components only.
 function BlockView({ b }: { b: Block }) {
   if (b.type === "text") return <p>{b.text}</p>;
   if (b.type === "list") return <ul>{b.items.map((i, n) => <li key={n}>{i}</li>)}</ul>;
+  if (b.type === "video") return <VideoBlock videoId={b.videoId} />;
   if (b.type === "quest") return <p><Link href={`/quests/detail/?id=${b.questId}`}>Open quest</Link></p>;
   return <p><Link href={`/screens/?id=${b.screenId}`}>{b.label}</Link></p>;
 }

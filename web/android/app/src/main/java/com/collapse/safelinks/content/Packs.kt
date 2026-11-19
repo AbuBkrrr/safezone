@@ -4,6 +4,7 @@ import com.collapse.safelinks.dtn.Bundle
 import com.collapse.safelinks.dtn.canonical
 import com.collapse.safelinks.dtn.unhex
 import com.collapse.safelinks.dtn.verifySig
+import com.collapse.safelinks.content.VideoStore
 import kotlinx.serialization.json.*
 
 /**
@@ -64,7 +65,10 @@ object Packs {
                 if (!sids.add(id)) return Result.Refused("duplicate screen $id")
                 validateScreen(s.jsonObject)?.let { return Result.Refused("$it in screen $id") }
             }
-            if (quests.isEmpty() && screens.isEmpty()) return Result.Refused("empty pack")
+            val videos = pack["videos"]?.jsonArray ?: JsonArray(emptyList())
+            if (videos.size > 20) return Result.Refused("too many videos")
+            for (v in videos) validateVideo(v.jsonObject)?.let { return Result.Refused("$it in video") }
+            if (quests.isEmpty() && screens.isEmpty() && videos.isEmpty()) return Result.Refused("empty pack")
             Result.Ok(version, pack)
         } catch (_: Exception) {
             Result.Refused("malformed pack")
@@ -127,6 +131,38 @@ object Packs {
         return null
     }
 
+    /** Parses a pack's video manifests. Entries that fail validation are dropped by VideoStore.register. */
+    fun videoManifests(pack: JsonObject): List<VideoManifest> =
+        (pack["videos"]?.jsonArray ?: JsonArray(emptyList())).mapNotNull { el ->
+            try {
+                val v = el.jsonObject
+                VideoManifest(
+                    id = v["id"]!!.jsonPrimitive.content,
+                    title = v["title"]!!.jsonPrimitive.content,
+                    size = v["size"]!!.jsonPrimitive.long,
+                    sha256 = v["sha256"]!!.jsonPrimitive.content,
+                    chunkSize = v["chunkSize"]!!.jsonPrimitive.int,
+                    chunkHashes = v["chunkHashes"]!!.jsonArray.map { it.jsonPrimitive.content },
+                )
+            } catch (_: Exception) { null }
+        }
+
+    internal fun validateVideo(v: JsonObject): String? {
+        val m = try {
+            VideoManifest(
+                id = v["id"]!!.jsonPrimitive.content,
+                title = v["title"]!!.jsonPrimitive.content,
+                size = v["size"]!!.jsonPrimitive.long,
+                sha256 = v["sha256"]!!.jsonPrimitive.content,
+                chunkSize = v["chunkSize"]!!.jsonPrimitive.int,
+                chunkHashes = v["chunkHashes"]!!.jsonArray.map { it.jsonPrimitive.content },
+            )
+        } catch (_: Exception) {
+            return "malformed video"
+        }
+        return VideoStore.validate(m)
+    }
+
     /** A screen is a list of content blocks drawn by the app. Packs cannot ship code, only these block types. */
     internal fun validateScreen(s: JsonObject): String? {
         if (!ID.matches(s["id"]?.jsonPrimitive?.content ?: "")) return "bad screen id"
@@ -143,6 +179,7 @@ object Packs {
                     if (items.size > 20 || items.any { (it.jsonPrimitive.content).let { t -> t.isEmpty() || t.length > 200 } }) return "bad list block"
                 }
                 "quest" -> if (!ID.matches(o["questId"]?.jsonPrimitive?.content ?: "")) return "bad quest link"
+                "video" -> if (!ID.matches(o["videoId"]?.jsonPrimitive?.content ?: "")) return "bad video link"
                 "link" -> {
                     if (!ID.matches(o["screenId"]?.jsonPrimitive?.content ?: "")) return "bad screen link"
                     val label = o["label"]?.jsonPrimitive?.content ?: ""

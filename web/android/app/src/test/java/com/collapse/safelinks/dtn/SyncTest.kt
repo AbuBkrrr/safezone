@@ -15,7 +15,7 @@ class SyncTest {
     private val noMaintainer = ByteArray(32)
 
     private fun node(id: Identity, store: DtnStore = DtnStore()) =
-        Node(id, store, { 0 to listOf(ByteArray(32)) }, 0, 0, { _, _ -> }, { _, _ -> }, { })
+        Node(id, store, { 0 to listOf(ByteArray(32)) }, 0, 0, { _, _ -> }, { _, _ -> }, { }, com.collapse.safelinks.content.VideoStore(java.nio.file.Files.createTempDirectory("v").toFile()))
 
     private fun link(a: Node, b: Node, t: Long): Pair<SyncProtocol.SyncResult, SyncProtocol.SyncResult> {
         val a2b = PipedOutputStream(); val b2a = PipedOutputStream()
@@ -61,5 +61,27 @@ class SyncTest {
         na.store.bundles[m.id] = m
         link(na, nc, now + 5)
         assertEquals(big.length, nc.store.inbox[0].body.jsonObject["text"]!!.jsonPrimitive.content.length)
+    }
+
+    @Test fun videoMovesInTwoSessionsWithinBudget() {
+        val data = ByteArray(300_000).also { java.util.Random(7).nextBytes(it) }
+        val cs = 16384
+        val hashes = (0 until (data.size + cs - 1) / cs).map { i ->
+            com.collapse.safelinks.content.VideoStore.sha256Hex(data.copyOfRange(i * cs, minOf(data.size, (i + 1) * cs)))
+        }
+        val m = com.collapse.safelinks.content.VideoManifest("clip-1", "Clip", data.size.toLong(),
+            com.collapse.safelinks.content.VideoStore.sha256Hex(data), cs, hashes)
+        val a = node(Identity.generate()); val b = node(Identity.generate())
+        a.videos.register(listOf(m)); b.videos.register(listOf(m))
+        val src = java.io.File.createTempFile("clip", ".mp4").also { it.writeBytes(data) }
+        assertTrue(a.videos.seedFile("clip-1", src))
+        a.blobBudget = 100_000
+        link(a, b, now)
+        assertFalse(b.videos.isInstalled("clip-1"))
+        assertEquals(6, b.videos.have("clip-1").size)     // 6 pieces of 16 KB fit in 100 KB
+        a.blobBudget = 8_000_000
+        link(a, b, now + 60)                               // the next contact finishes the video
+        assertTrue(b.videos.isInstalled("clip-1"))
+        assertArrayEquals(data, java.io.File(b.videos.installedPath("clip-1")!!).readBytes())
     }
 }

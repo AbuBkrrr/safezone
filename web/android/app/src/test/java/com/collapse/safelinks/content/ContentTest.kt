@@ -117,4 +117,19 @@ class ContentTest {
         val kr = Packs.verifyKeyring(kb, kbody, 0, listOf(maintainer))
         assertTrue("$kr", kr is Packs.KeyringResult.Ok)
     }
+
+    /** Interop: a video pack built by the web tool (manifest with piece hashes) verifies and its manifest validates here. */
+    @Test fun verifiesWebBuiltVideoPack() {
+        val maintainer = com.collapse.safelinks.dtn.unhex(com.collapse.safelinks.Content.MAINTAINER_PUB_HEX)
+        val b = Bundle.fromJson(Json.parseToJsonElement(javaClass.getResource("/video-pack-7-bundle.json")!!.readText()).jsonObject)
+        assertTrue(verifyBundle(b, b.created + 60))
+        val body = Json.parseToJsonElement(String(unhex(b.body))).jsonObject["body"]!!
+        val r = Packs.verify(b, body, 0, listOf(maintainer))
+        assertTrue("$r", r is Packs.Result.Ok)
+        val manifests = Packs.videoManifests((r as Packs.Result.Ok).pack)
+        assertEquals(1, manifests.size)
+        assertNull(VideoStore.validate(manifests[0]))
+        assertEquals(40000L, manifests[0].size)
+        assertEquals(3, manifests[0].chunkCount)
+    }
 }

@@ -46,4 +46,19 @@ class DtnPlugin : Plugin() {
         val pack = RelayService.packJson()
         call.resolve(JSObject().put("version", RelayService.packVersion()).put("pack", pack?.toString()))
     }
+
+    /** Video status: id, title, whether it is installed, and how many of its pieces this phone holds. */
+    @PluginMethod
+    fun videos(call: PluginCall) {
+        val list = RelayService.videoStatus().map { v ->
+            JSObject()
+                .put("id", v.id)
+                .put("title", v.title)
+                .put("installed", v.installed)
+                .put("have", v.have)
+                .put("total", v.total)
+                .put("path", v.path ?: "")
+        }
+        call.resolve(JSObject().put("items", JSArray(list)))
+    }
 }

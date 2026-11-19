@@ -1,15 +1,17 @@
 package com.collapse.safelinks.sync
 
 import com.collapse.safelinks.content.Packs
+import com.collapse.safelinks.content.VideoStore
 import com.collapse.safelinks.dtn.*
 import kotlinx.serialization.json.*
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.util.Base64
 import java.util.concurrent.Executors
 
 /**
- * This device's DTN state, plus the callbacks that install verified packs and keyrings.
- * trust() returns the current keyring version and the trusted keys.
+ * This device's DTN state, plus the callbacks that install verified packs and keyrings, and the video store.
+ * blobBudget caps how many video bytes one session may send, so a large video spreads over several contacts.
  */
 class Node(
     val identity: Identity,
@@ -20,17 +22,22 @@ class Node(
     val onPack: (version: Int, pack: JsonObject) -> Unit,
     val onKeyring: (version: Int, keys: List<String>) -> Unit,
     val save: (DtnStore) -> Unit,
+    val videos: VideoStore,
+    var blobBudget: Long = 8_000_000L,
 )
 
 /**
  * One sync exchange over any byte stream (BLE GATT channel, socket, or a test pipe).
- * Frames: 4-byte big-endian length + UTF-8 JSON. Order: hello, sum, push, final. Both sides run the same steps.
- * Writes happen on a dedicated thread so large pushes cannot deadlock against the peer's reads.
+ * Frames: 4-byte big-endian length + UTF-8 JSON.
+ * Message phase: hello, sum, push, final (both sides run the same steps).
+ * Install: verified keyrings, then packs (which register video manifests).
+ * Video phase: have (piece lists), then each side streams the pieces the other lacks, up to its budget,
+ * while receiving the other side's pieces. Every piece is checked against its signed hash.
  */
 object SyncProtocol {
     const val MAX_FRAME = 8 * 1024 * 1024
 
-    class SyncResult(val peerAddr: String, val delivered: List<Delivered>)
+    class SyncResult(val peerAddr: String, val delivered: List<Delivered>, val piecesReceived: Int)
 
     fun run(input: DataInputStream, output: DataOutputStream, node: Node, now: Long): SyncResult {
         val writer = Executors.newSingleThreadExecutor()
@@ -39,10 +46,13 @@ object SyncProtocol {
                 val bytes = o.toString().toByteArray(Charsets.UTF_8)
                 writer.submit { output.writeInt(bytes.size); output.write(bytes); output.flush() }.get()
             }
-            fun recv(expect: String): JsonObject {
+            fun readFrame(): JsonObject {
                 val n = input.readInt()
                 require(n in 1..MAX_FRAME) { "bad frame size $n" }
-                val o = Json.parseToJsonElement(String(input.readNBytes(n), Charsets.UTF_8)).jsonObject
+                return Json.parseToJsonElement(String(input.readNBytes(n), Charsets.UTF_8)).jsonObject
+            }
+            fun recv(expect: String): JsonObject {
+                val o = readFrame()
                 require(o["type"]!!.jsonPrimitive.content == expect) { "expected $expect" }
                 return o
             }
@@ -73,10 +83,65 @@ object SyncProtocol {
             send(buildJsonObject { put("type", "final"); put("acks", JsonArray(newAcks.map { it.toJson() })) })
             val finalAcks = recv("final")["acks"]!!.jsonArray.map { Ack.fromJson(it.jsonObject) }
             store.receive(SyncMsg(emptyList(), finalAcks), me, now) { false }
-
             node.save(store)
+
             for (d in delivered) install(node, d)
-            return SyncResult(peerAddr, delivered)
+
+            // Video phase.
+            val mine = node.videos.manifests()
+            send(buildJsonObject {
+                put("type", "have")
+                put("videos", buildJsonObject { mine.forEach { m -> put(m.id, JsonArray(node.videos.have(m.id).map { JsonPrimitive(it) })) } })
+            })
+            val peerHave = recv("have")["videos"]!!.jsonObject.mapValues { (_, v) -> v.jsonArray.map { it.jsonPrimitive.int }.toSet() }
+
+            var sendError: Throwable? = null
+            val sender = Thread {
+                try {
+                    var budget = node.blobBudget
+                    outer@ for (m in mine) {
+                        val theirs = peerHave[m.id] ?: emptySet()
+                        for (i in node.videos.have(m.id)) {
+                            if (i in theirs) continue
+                            val data = node.videos.readChunk(m.id, i) ?: continue
+                            if (data.size > budget) break@outer
+                            budget -= data.size
+                            val frame = buildJsonObject {
+                                put("type", "piece"); put("id", m.id); put("i", i)
+                                put("data", Base64.getEncoder().encodeToString(data))
+                            }.toString().toByteArray(Charsets.UTF_8)
+                            output.writeInt(frame.size); output.write(frame)
+                        }
+                    }
+                    val done = buildJsonObject { put("type", "pieces_done") }.toString().toByteArray(Charsets.UTF_8)
+                    output.writeInt(done.size); output.write(done); output.flush()
+                } catch (e: Throwable) {
+                    sendError = e
+                }
+            }
+            sender.start()
+            var received = 0
+            try {
+                while (true) {
+                    val f = readFrame()
+                    when (f["type"]!!.jsonPrimitive.content) {
+                        "pieces_done" -> break
+                        "piece" -> {
+                            val ok = node.videos.putChunk(
+                                f["id"]!!.jsonPrimitive.content,
+                                f["i"]!!.jsonPrimitive.int,
+                                Base64.getDecoder().decode(f["data"]!!.jsonPrimitive.content),
+                            )
+                            if (ok) received++
+                        }
+                        else -> error("unexpected frame in video phase")
+                    }
+                }
+            } finally {
+                sender.join()
+            }
+            sendError?.let { throw it }
+            return SyncResult(peerAddr, delivered, received)
         } finally {
             writer.shutdownNow()
         }
