@@ -7,19 +7,23 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.util.concurrent.Executors
 
-/** This device's DTN state and the callbacks for installing verified packs. */
+/**
+ * This device's DTN state, plus the callbacks that install verified packs and keyrings.
+ * trust() returns the current keyring version and the trusted keys.
+ */
 class Node(
     val identity: Identity,
     val store: DtnStore,
-    val maintainerPub: ByteArray,
-    val baseIds: Set<String>,
+    val trust: () -> Pair<Int, List<ByteArray>>,
     var packVersion: Int,
+    var keyringVersion: Int,
     val onPack: (version: Int, pack: JsonObject) -> Unit,
+    val onKeyring: (version: Int, keys: List<String>) -> Unit,
     val save: (DtnStore) -> Unit,
 )
 
 /**
- * One sync exchange over any byte stream (Wi-Fi Direct socket, Bluetooth socket, or a test pipe).
+ * One sync exchange over any byte stream (BLE GATT channel, socket, or a test pipe).
  * Frames: 4-byte big-endian length + UTF-8 JSON. Order: hello, sum, push, final. Both sides run the same steps.
  * Writes happen on a dedicated thread so large pushes cannot deadlock against the peer's reads.
  */
@@ -63,7 +67,7 @@ object SyncProtocol {
             val pushMsg = SyncMsg.fromJson(recv("push")["msg"]!!.jsonObject)
 
             val acksBefore = store.acks.keys.toSet()
-            val delivered = store.receive(pushMsg, me, now) { it.src.substring(0, 64) == hex(node.maintainerPub) }
+            val delivered = store.receive(pushMsg, me, now) { b -> node.trust().second.any { it.contentEquals(unhex(b.src.substring(0, 64))) } }
             val newAcks = store.acks.values.filter { it.bundleId !in acksBefore }
 
             send(buildJsonObject { put("type", "final"); put("acks", JsonArray(newAcks.map { it.toJson() })) })
@@ -71,21 +75,32 @@ object SyncProtocol {
             store.receive(SyncMsg(emptyList(), finalAcks), me, now) { false }
 
             node.save(store)
-            for (d in delivered) if (d.kind == Packs.KIND) installPack(node, d)
+            for (d in delivered) install(node, d)
             return SyncResult(peerAddr, delivered)
         } finally {
             writer.shutdownNow()
         }
     }
 
-    private fun installPack(node: Node, d: Delivered) {
+    /** Keyrings first, then packs, so a pack signed by a newly trusted key is accepted in the same sync. */
+    private fun install(node: Node, d: Delivered) {
         val bundle = node.store.bundles[d.id] ?: return
-        when (val r = Packs.verify(bundle, d.body, node.packVersion, node.baseIds, node.maintainerPub)) {
-            is Packs.Result.Ok -> {
-                node.packVersion = r.version
-                node.onPack(r.version, r.pack)
+        val (kv, keys) = node.trust()
+        when (d.kind) {
+            Packs.KEYRING_KIND -> {
+                val r = Packs.verifyKeyring(bundle, d.body, kv, keys)
+                if (r is Packs.KeyringResult.Ok) {
+                    node.keyringVersion = r.version
+                    node.onKeyring(r.version, r.keys)
+                }
             }
-            is Packs.Result.Refused -> Unit
+            Packs.KIND -> {
+                val r = Packs.verify(bundle, d.body, node.packVersion, keys)
+                if (r is Packs.Result.Ok) {
+                    node.packVersion = r.version
+                    node.onPack(r.version, r.pack)
+                }
+            }
         }
     }
 }

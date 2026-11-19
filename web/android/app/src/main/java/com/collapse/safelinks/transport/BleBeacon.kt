@@ -1,5 +1,6 @@
 package com.collapse.safelinks.transport
 
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
@@ -10,7 +11,6 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.ParcelUuid
-import com.collapse.safelinks.dtn.hex
 
 /**
  * Bluetooth LE presence beacon. Each phone advertises a short id (8 bytes of its address hash)
@@ -20,7 +20,7 @@ import com.collapse.safelinks.dtn.hex
 class BleBeacon(
     private val ctx: Context,
     private val myId: ByteArray,
-    private val onPeerNearby: (peerId: String) -> Unit,
+    private val onPeerNearby: (peerId: ByteArray, device: BluetoothDevice) -> Unit,
 ) {
     companion object {
         val SERVICE: ParcelUuid = ParcelUuid.fromString("0000FCF1-0000-1000-8000-00805F9B34FB")
@@ -36,7 +36,7 @@ class BleBeacon(
         val short = myId.copyOf(8)
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER)
-            .setConnectable(false)
+            .setConnectable(true)
             .build()
         val data = AdvertiseData.Builder()
             .addServiceUuid(SERVICE)
@@ -53,7 +53,7 @@ class BleBeacon(
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 val id = result.scanRecord?.getServiceData(SERVICE) ?: return
                 if (id.contentEquals(short)) return
-                onPeerNearby(hex(id))
+                onPeerNearby(id, result.device)
             }
         }
         scanCb = scb

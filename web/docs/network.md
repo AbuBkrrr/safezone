@@ -29,3 +29,12 @@
   Code changes still need a new app install.
 - No key rotation or revocation for the maintainer key. A leaked key lets its holder push packs to every device.
 - The simulation does not model radio loss, latency, battery or device movement patterns of real people.
+
+## Gaps closed (round 2)
+- No accept prompt: bulk sync moved from Wi-Fi Direct to Bluetooth LE GATT. The connection needs only the Bluetooth permissions granted on first launch. Trade-off: tens of KB/s, enough for messages and packs, not video.
+- Keys in Android Keystore: an AES-256-GCM master key, StrongBox-backed where available, wraps the identity seeds, message store, content, and keyring on disk. Ed25519 and X25519 private keys cannot live inside Keystore on API 26-32, so they are unwrapped in memory while in use. The web app still keeps keys in browser storage.
+- Maintainer key rotation: the device trusts a keyring (1-3 keys). A new keyring must be signed by a currently trusted key, carry a newer version, and it replaces the trusted set. Packs signed by revoked keys are then refused. Tool: scripts/maintainer.ts keyring.
+- Packs add quests and screens: new quest ids and new screens install without an app update. Screens use fixed block types (text, list, quest link, screen link). Packs cannot ship code.
+
+## Still open
+- Nothing in the Bluetooth or Keystore code has run on a phone yet; it is verified by compile and JVM tests only.

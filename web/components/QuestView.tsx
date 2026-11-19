@@ -4,7 +4,7 @@ import { activeQuests } from "@/lib/content";
 import { applyEvent, currentStage, isComplete, type QuestDef } from "@/lib/quests";
 import { loadState, saveState } from "@/lib/store";
 import { QUEST_TYPE_LABEL } from "@/lib/seed";
-import { QuestRecorder } from "@/app/quests/[id]/recorder";
+import { QuestRecorder } from "@/components/QuestRecorder";
 
 /** Stage-by-stage quest screen. Visit stages advance from GPS; record stages advance from evidence. */
 export function QuestView({ id }: { id: string }) {

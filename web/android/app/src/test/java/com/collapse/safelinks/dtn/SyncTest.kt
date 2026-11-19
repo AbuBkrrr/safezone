@@ -15,7 +15,7 @@ class SyncTest {
     private val noMaintainer = ByteArray(32)
 
     private fun node(id: Identity, store: DtnStore = DtnStore()) =
-        Node(id, store, noMaintainer, setOf("q47"), 0, { _, _ -> }, { })
+        Node(id, store, { 0 to listOf(ByteArray(32)) }, 0, 0, { _, _ -> }, { _, _ -> }, { })
 
     private fun link(a: Node, b: Node, t: Long): Pair<SyncProtocol.SyncResult, SyncProtocol.SyncResult> {
         val a2b = PipedOutputStream(); val b2a = PipedOutputStream()

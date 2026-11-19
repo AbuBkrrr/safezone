@@ -18,7 +18,7 @@ export default function QuestsPage() {
         const p = progress[q.id] ?? 0;
         const status = isComplete(q, p) ? "Complete" : `Stage ${p + 1} of ${q.stages.length}`;
         return (
-          <Link key={q.id} href={`/quests/${q.id}/`} style={{ textDecoration: "none", color: "inherit", display: "block" }}>
+          <Link key={q.id} href={`/quests/detail/?id=${q.id}`} style={{ textDecoration: "none", color: "inherit", display: "block" }}>
             <div className="card">
               <div className="row" style={{ borderTop: 0, padding: 0 }}><span className="muted">{QUEST_TYPE_LABEL[q.type]}</span><span className="tag">{status}</span></div>
               <strong>{q.title}</strong>

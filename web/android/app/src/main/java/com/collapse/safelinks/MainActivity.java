@@ -32,7 +32,6 @@ public class MainActivity extends BridgeActivity {
             want.add(Manifest.permission.BLUETOOTH_CONNECT);
         }
         if (Build.VERSION.SDK_INT >= 33) {
-            want.add("android.permission.NEARBY_WIFI_DEVICES");
             want.add(Manifest.permission.POST_NOTIFICATIONS);
         }
         ArrayList<String> missing = new ArrayList<>();

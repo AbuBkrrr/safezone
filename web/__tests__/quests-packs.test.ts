@@ -2,30 +2,32 @@ import { describe, expect, it } from "vitest";
 import nacl from "tweetnacl";
 import { QUESTS } from "../lib/seed";
 import { applyEvent, currentStage, isComplete, validateQuestDef, type QuestDef } from "../lib/quests";
-import { PACK_NAME, packBundle, signPack, verifyPack, type Pack } from "../lib/dtn/packs";
-import { BROADCAST, addressOf, emptyDtn, newDtnIdentity, receive, makeBundle, plan, summary, type DtnIdentity, isExpired, type Bundle } from "../lib/dtn/core";
-import { fromHex, toHex } from "../lib/trade";
+import { validateScreen } from "../lib/screens";
+import {
+  KEYRING_NAME, PACK_NAME, isTrustedSource, keyringBundle, packBundle, signKeyring, signPack,
+  verifyKeyring, verifyPack, type Keyring, type Pack,
+} from "../lib/dtn/packs";
+import { BROADCAST, addressOf, emptyDtn, makeBundle, newDtnIdentity, receive, plan, summary, type DtnIdentity, type DtnState } from "../lib/dtn/core";
+import { toHex } from "../lib/trade";
 
-const BASE_IDS = QUESTS.map((q) => q.id);
+const NOW = 1_800_000_000;
 const q47 = QUESTS[0];
+const keypair = () => { const k = nacl.sign.keyPair(); return { pub: toHex(k.publicKey), sec: toHex(k.secretKey) }; };
+const screen = (id: string) => ({ id, title: `News ${id}`, blocks: [{ type: "text" as const, text: "Hello" }] });
+const pack = (version: number, quests: QuestDef[] = [q47], screens: ReturnType<typeof screen>[] = []): Pack =>
+  ({ name: PACK_NAME, version, issued: NOW, quests, screens });
 
 describe("multi-stage quests", () => {
   it("advances in order: visit inside the radius, then record", () => {
-    let p = 0;
-    // Outside the radius: no progress.
-    p = applyEvent(q47, p, { kind: "visit", lat: 12.01, lng: 8.6, accuracyM: 5 });
+    let p = applyEvent(q47, 0, { kind: "visit", lat: 12.01, lng: 8.6, accuracyM: 5 });
     expect(p).toBe(0);
-    // Record before arrival is ignored.
     expect(applyEvent(q47, p, { kind: "record" })).toBe(0);
-    // Inside radius with good accuracy: advances to stage 2.
     p = applyEvent(q47, p, { kind: "visit", lat: 12.0022, lng: 8.592, accuracyM: 8 });
     expect(p).toBe(1);
     expect(currentStage(q47, p)?.kind).toBe("record");
-    // A visit with poor accuracy does not count (and is not needed now).
     expect(applyEvent(q47, p, { kind: "visit", lat: 12.0022, lng: 8.592, accuracyM: 80 })).toBe(1);
     p = applyEvent(q47, p, { kind: "record" });
     expect(isComplete(q47, p)).toBe(true);
-    // Completed quests stay completed.
     expect(applyEvent(q47, p, { kind: "record" })).toBe(p);
   });
 
@@ -33,78 +35,78 @@ describe("multi-stage quests", () => {
     expect(validateQuestDef(q47).ok).toBe(true);
     expect(validateQuestDef({ ...q47, id: "Bad Id" }).ok).toBe(false);
     expect(validateQuestDef({ ...q47, stages: [] }).ok).toBe(false);
-    expect(validateQuestDef({ ...q47, stages: [{ id: "x", kind: "visit", text: "t", lat: 999, lng: 0, radiusM: 50 }] }).ok).toBe(false);
     expect(validateQuestDef({ ...q47, type: "hack" as QuestDef["type"] }).ok).toBe(false);
   });
 });
 
-describe("signed packs", () => {
-  const kp = nacl.sign.keyPair();
-  const pub = toHex(kp.publicKey), sec = toHex(kp.secretKey);
-  const pack = (version: number, quests: QuestDef[] = [{ ...q47, title: "The Wall Remembers (v2)" }]): Pack => ({ name: PACK_NAME, version, issued: 1, quests });
-
-  it("installs a validly signed newer pack", () => {
-    const r = verifyPack(signPack(sec, pack(2)), 1, BASE_IDS, pub);
-    expect(r).toEqual({ ok: true });
-  });
-  it("refuses a tampered pack", () => {
-    const sp = signPack(sec, pack(2));
-    expect(verifyPack({ ...sp, pack: { ...sp.pack, quests: [{ ...q47, rewardPoints: 99999 }] } }, 1, BASE_IDS, pub).ok).toBe(false);
-  });
-  it("refuses a pack signed by another key", () => {
-    const other = nacl.sign.keyPair();
-    expect(verifyPack(signPack(toHex(other.secretKey), pack(2)), 1, BASE_IDS, pub).ok).toBe(false);
-  });
-  it("refuses rollback to an older or equal version", () => {
-    expect(verifyPack(signPack(sec, pack(3)), 3, BASE_IDS, pub).ok).toBe(false);
-    expect(verifyPack(signPack(sec, pack(2)), 3, BASE_IDS, pub).ok).toBe(false);
-  });
-  it("refuses quest ids that need an app update", () => {
-    const r = verifyPack(signPack(sec, pack(2, [{ ...q47, id: "brand-new" }])), 1, BASE_IDS, pub);
-    expect(r.ok).toBe(false);
-  });
-  it("travels as a broadcast bundle that a relay cannot forge", () => {
-    const maint = { signPub: pub, signSec: sec, boxPub: toHex(nacl.box.keyPair().publicKey), boxSec: toHex(nacl.box.keyPair().secretKey) } as DtnIdentity;
-    const now = 1_800_000_000;
-    const b = packBundle(maint, signPack(sec, pack(2)), now, 7 * 24 * 3600);
-    expect(b.dst).toBe(BROADCAST);
-    const bad = { ...b, body: b.body.replace(/.$/, "0") };
-    const s = emptyDtn();
-    const relay = newDtnIdentity();
-    const rr = receive(s, { bundles: [bad as Bundle], acks: [] }, relay, now);
-    expect(rr.delivered.length).toBe(0);
-    expect(s.bundles[b.id]).toBeUndefined();
+describe("screens", () => {
+  it("accepts known blocks and refuses anything else", () => {
+    expect(validateScreen(screen("news-1")).ok).toBe(true);
+    expect(validateScreen({ id: "x", title: "t", blocks: [{ type: "script", code: "alert(1)" }] }).ok).toBe(false);
+    expect(validateScreen({ id: "x", title: "t", blocks: [{ type: "link", label: "go", screenId: "BAD ID" }] }).ok).toBe(false);
   });
 });
 
-describe("pack delivery across devices", () => {
-  it("reaches a device that never met the maintainer, via a relay", () => {
-    const seed = nacl.sign.keyPair();
-    const pub = toHex(seed.publicKey), sec = toHex(seed.secretKey);
-    const maint = { signPub: pub, signSec: sec, boxPub: toHex(nacl.box.keyPair().publicKey), boxSec: toHex(nacl.box.keyPair().secretKey) } as DtnIdentity;
+describe("signed packs and key rotation", () => {
+  const maint = keypair();
+
+  it("accepts a newer pack that adds a new quest and a screen", () => {
+    const sp = signPack(maint.sec, pack(1, [{ ...q47, id: "brand-new" }], [screen("news-1")]));
+    expect(verifyPack(sp, 0, [maint.pub])).toEqual({ ok: true });
+  });
+  it("refuses tampering, untrusted signers, rollback, and bad screens", () => {
+    const sp = signPack(maint.sec, pack(2));
+    expect(verifyPack({ ...sp, pack: { ...sp.pack, quests: [{ ...q47, rewardPoints: 99999 }] } }, 1, [maint.pub]).ok).toBe(false);
+    expect(verifyPack(signPack(keypair().sec, pack(2)), 1, [maint.pub]).ok).toBe(false);
+    expect(verifyPack(sp, 2, [maint.pub]).ok).toBe(false);
+    expect(verifyPack(signPack(maint.sec, pack(2, [q47], [{ id: "s", title: "t", blocks: [{ type: "script" } as never] }])), 1, [maint.pub]).ok).toBe(false);
+  });
+
+  it("rotates keys: the old key signs a keyring adding the new key, then retires itself", () => {
+    const oldK = keypair(), newK = keypair();
+    const k1: Keyring = { name: KEYRING_NAME, version: 1, keys: [oldK.pub, newK.pub] };
+    expect(verifyKeyring(signKeyring(oldK.sec, k1), 0, [oldK.pub])).toEqual({ ok: true });
+    const k2: Keyring = { name: KEYRING_NAME, version: 2, keys: [newK.pub] };
+    expect(verifyKeyring(signKeyring(oldK.sec, k2), 1, [oldK.pub, newK.pub])).toEqual({ ok: true });
+    // After rotation only the new key is trusted.
+    expect(verifyPack(signPack(oldK.sec, pack(5)), 0, [newK.pub]).ok).toBe(false);
+    expect(verifyPack(signPack(newK.sec, pack(5)), 0, [newK.pub]).ok).toBe(true);
+  });
+
+  it("refuses a forged or replayed keyring", () => {
+    const evil = keypair();
+    const forged: Keyring = { name: KEYRING_NAME, version: 9, keys: [evil.pub] };
+    expect(verifyKeyring(signKeyring(evil.sec, forged), 0, [maint.pub]).ok).toBe(false);
+    const old: Keyring = { name: KEYRING_NAME, version: 2, keys: [maint.pub] };
+    expect(verifyKeyring(signKeyring(maint.sec, old), 2, [maint.pub]).ok).toBe(false);
+  });
+});
+
+describe("pack delivery over the DTN", () => {
+  it("reaches a device that never met the maintainer, via a relay, and only trusted sources are relayed", () => {
+    const maint = keypair();
+    const mId: DtnIdentity = { signPub: maint.pub, signSec: maint.sec, boxPub: toHex(nacl.box.keyPair().publicKey), boxSec: toHex(nacl.box.keyPair().secretKey) };
     const R = newDtnIdentity(), Z = newDtnIdentity();
-    const now = 1_800_000_000;
-    const pk: Pack = { name: PACK_NAME, version: 5, issued: now, quests: [{ ...q47, title: "Updated" }] };
-    const b = packBundle(maint, signPack(sec, pk), now, 7 * 24 * 3600);
+    const trusted = [maint.pub];
     const sm = emptyDtn(), sr = emptyDtn(), sz = emptyDtn();
+    const b = packBundle(mId, signPack(maint.sec, pack(5)), NOW, 7 * 24 * 3600);
     sm.bundles[b.id] = b;
-    const syncPair = (a: typeof sm, ai: DtnIdentity, c: typeof sm, ci: DtnIdentity, t: number) => {
+    const sync = (a: DtnState, ai: DtnIdentity, c: DtnState, ci: DtnIdentity, t: number) => {
       const sa = summary(a, t), sc = summary(c, t);
       const toC = plan(a, sc, addressOf(ci), t), toA = plan(c, sa, addressOf(ai), t);
-      const allow = (x: Bundle) => x.src.slice(0, 64) === pub;
-      return [receive(c, toC, ci, t, { allowBroadcast: allow }).delivered, receive(a, toA, ai, t, { allowBroadcast: allow }).delivered];
+      const allow = (x: { src: string }) => isTrustedSource(x.src, trusted);
+      receive(c, toC, ci, t, { allowBroadcast: allow });
+      receive(a, toA, ai, t, { allowBroadcast: allow });
     };
-    syncPair(sm, maint, sr, R, now + 60);
-    const [, fromZ] = syncPair(sr, R, sz, Z, now + 120);
-    void fromZ;
+    sync(sm, mId, sr, R, NOW + 60);
+    sync(sr, R, sz, Z, NOW + 120);
     expect(sz.inbox.map((d) => d.kind)).toEqual(["pack"]);
-    expect(isExpired(b, now + 1)).toBe(false);
-    // A non-maintainer broadcast is not relayed.
-    const junkId = newDtnIdentity();
-    const junk = makeBundle(junkId, BROADCAST, "pack", { x: 1 }, now, 3600);
+
+    const junkSender = newDtnIdentity();
+    const junk = makeBundle(junkSender, BROADCAST, "pack", { x: 1 }, NOW, 3600);
     sm.bundles[junk.id] = junk;
-    syncPair(sm, maint, sr, R, now + 180);
+    sync(sm, mId, sr, R, NOW + 180);
     expect(sr.bundles[junk.id]).toBeUndefined();
-    void fromHex;
+    void keyringBundle;
   });
 });

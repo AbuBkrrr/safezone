@@ -10,9 +10,8 @@ import {
   BROADCAST, addressOf, emptyDtn, makeBundle, plan, receive, summary, type DtnIdentity, type DtnState, type Summary, type SyncMsg, type Delivered,
 } from "@/lib/dtn/core";
 import { loadDtn, saveDtn } from "@/lib/dtn/state";
-import { installPack } from "@/lib/content";
-import { isMaintainerPack, PACK_KIND, type SignedPack } from "@/lib/dtn/packs";
-import { MAINTAINER_PUB } from "@/lib/dtn/maintainer";
+import { installKeyring, installPack, trustedKeys } from "@/lib/content";
+import { isTrustedSource, type SignedKeyring, type SignedPack } from "@/lib/dtn/packs";
 import { NativeMessages, isNative } from "@/components/NativeMessages";
 
 type Msg =
@@ -106,9 +105,12 @@ export default function TransferPage() {
       if (d.kind === "msg") {
         const t = (d.body as { text?: string })?.text ?? "";
         note(`New message: ${t}`, true);
-      } else if (isMaintainerPack(d.from, d.kind)) {
-        const r = installPack((d.body as SignedPack));
+      } else if (d.kind === "pack" && isTrustedSource(d.from, trustedKeys())) {
+        const r = installPack(d.body as SignedPack);
         note(r.ok ? `Update installed: content version ${r.version}.` : `Update refused: ${r.reason}.`, r.ok);
+      } else if (d.kind === "keyring" && isTrustedSource(d.from, trustedKeys())) {
+        const r = installKeyring(d.body as SignedKeyring);
+        note(r.ok ? `Trusted keys updated (keyring ${r.version}).` : `Key update refused: ${r.reason}.`, r.ok);
       }
     }
   }
@@ -138,7 +140,7 @@ export default function TransferPage() {
       const now = Math.floor(Date.now() / 1000);
       const next = structuredClone(dtnRef.current);
       const acksBefore = Object.keys(next.acks).length;
-      const r = receive(next, m.msg, me, now, { allowBroadcast: (b: TradeBundle | { src: string; dst: string }) => (b as { src: string }).src.slice(0, 64) === MAINTAINER_PUB });
+      const r = receive(next, m.msg, me, now, { allowBroadcast: (b) => isTrustedSource(b.src, trustedKeys()) });
       commitDtn(next);
       handleDelivered(r.delivered);
       // Acks created here were not part of the push the peer planned, so send them now. They are small and signed.
@@ -292,7 +294,6 @@ export default function TransferPage() {
   const myAddr = dtnIdentity(s) ? addressOf(dtnIdentity(s)!) : "";
   const inbox = dtn.inbox.filter((d) => d.kind === "msg").slice().reverse();
   const queued = Object.values(dtn.bundles).filter((b) => b.dst !== BROADCAST).length;
-  void PACK_KIND;
 
   return (
     <>

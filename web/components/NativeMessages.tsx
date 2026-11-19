@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { registerPlugin } from "@capacitor/core";
-import { loadPack, savePack } from "@/lib/dtn/state";
+import { loadPack, savePack } from "@/lib/content";
 
 interface DtnPlugin {
   address(): Promise<{ address: string }>;
@@ -36,8 +36,8 @@ export function NativeMessages() {
         const p = await Dtn.pack();
         const cur = loadPack()?.version ?? 0;
         if (p.pack && p.version > cur) {
-          const quests = (JSON.parse(p.pack) as { quests: unknown[] }).quests;
-          savePack({ version: p.version, quests: quests as never });
+          const pk = JSON.parse(p.pack) as { quests: never[]; screens?: never[] };
+          savePack({ version: p.version, quests: pk.quests, screens: pk.screens ?? [] });
           if (alive) setStatus(`Content updated to version ${p.version}.`);
         }
       } catch {

@@ -107,11 +107,10 @@ class DtnTest {
         assertTrue("web-built bundle header must verify", verifyBundle(bundle, bundle.created + 60))
         val body = Json.parseToJsonElement(String(unhex(bundle.body))).jsonObject
         val maintainer = unhex("4e203ec98eedfbd9251f35a817d66ddbd6acf5d6579e7a5db6be06d54ea96a1d")
-        val baseIds = setOf("q47", "q48", "q49")
-        val r = Packs.verify(bundle, body["body"]!!, installedVersion = 0, baseIds = baseIds, maintainerPub = maintainer)
+        val r = Packs.verify(bundle, body["body"]!!, installedVersion = 0, trusted = listOf(maintainer))
         assertTrue("pack should install: $r", r is Packs.Result.Ok)
         assertEquals(5, (r as Packs.Result.Ok).version)
         // Rollback and tampering are refused.
-        assertTrue(Packs.verify(bundle, body["body"]!!, 5, baseIds, maintainer) is Packs.Result.Refused)
+        assertTrue(Packs.verify(bundle, body["body"]!!, 5, listOf(maintainer)) is Packs.Result.Refused)
     }
 }

@@ -7,29 +7,38 @@ import com.collapse.safelinks.dtn.verifySig
 import kotlinx.serialization.json.*
 
 /**
- * Signed content packs, ported from web/lib/dtn/packs.ts. A pack is accepted only if its signature
- * checks against the pinned maintainer key, its version is newer than the installed one, and it
- * changes existing quests only.
+ * Signed content packs and keyrings. A pack adds or changes quests and screens. A keyring replaces
+ * the set of trusted maintainer keys (rotation). Both must be signed by a key the device already trusts,
+ * and both must carry a version newer than the installed one, so old copies cannot be replayed.
  */
 object Packs {
     const val NAME = "collapse-content"
+    const val KEYRING_NAME = "collapse-keyring"
     const val KIND = "pack"
+    const val KEYRING_KIND = "keyring"
+    const val MAX_KEYS = 3
 
     sealed class Result {
         data class Ok(val version: Int, val pack: JsonObject) : Result()
         data class Refused(val reason: String) : Result()
     }
 
-    /** Verifies the pack carried in a broadcast bundle's body and source. */
-    fun verify(
-        bundle: Bundle,
-        body: JsonElement,
-        installedVersion: Int,
-        baseIds: Set<String>,
-        maintainerPub: ByteArray,
-    ): Result {
+    sealed class KeyringResult {
+        data class Ok(val version: Int, val keys: List<String>) : KeyringResult()
+        data class Refused(val reason: String) : KeyringResult()
+    }
+
+    private fun trustedSigner(trusted: List<ByteArray>, msg: ByteArray, sig: ByteArray): Boolean =
+        trusted.any { verifySig(it, msg, sig) }
+
+    private fun fromTrusted(bundle: Bundle, trusted: List<ByteArray>): Boolean {
         val src = unhex(bundle.src.substring(0, 64))
-        if (!src.contentEquals(maintainerPub)) return Result.Refused("not from the maintainer")
+        return trusted.any { it.contentEquals(src) }
+    }
+
+    /** Verifies a content pack carried in a broadcast bundle. */
+    fun verify(bundle: Bundle, body: JsonElement, installedVersion: Int, trusted: List<ByteArray>): Result {
+        if (!fromTrusted(bundle, trusted)) return Result.Refused("source is not a trusted key")
         return try {
             val signed = body.jsonObject
             val pack = signed["pack"]!!.jsonObject
@@ -37,20 +46,49 @@ object Packs {
             if (pack["name"]?.jsonPrimitive?.content != NAME) return Result.Refused("wrong pack name")
             val version = pack["version"]!!.jsonPrimitive.int
             if (version < 1) return Result.Refused("bad version")
-            if (!verifySig(maintainerPub, ("collapse-pack-v1|" + canonical(pack)).toByteArray(), sig)) return Result.Refused("bad signature")
+            if (!trustedSigner(trusted, ("collapse-pack-v1|" + canonical(pack)).toByteArray(), sig)) return Result.Refused("bad signature")
             if (version <= installedVersion) return Result.Refused("not newer than installed version (rollback refused)")
-            val quests = pack["quests"]!!.jsonArray
-            if (quests.isEmpty() || quests.size > 100) return Result.Refused("bad quest list")
-            val seen = HashSet<String>()
+            val quests = pack["quests"]?.jsonArray ?: JsonArray(emptyList())
+            if (quests.size > 100) return Result.Refused("too many quests")
+            val ids = HashSet<String>()
             for (q in quests) {
-                val id = q.jsonObject["id"]!!.jsonPrimitive.content
-                if (id !in baseIds) return Result.Refused("unknown quest id $id (needs an app update)")
-                if (!seen.add(id)) return Result.Refused("duplicate quest $id")
+                val id = q.jsonObject["id"]?.jsonPrimitive?.content ?: return Result.Refused("quest without id")
+                if (!ids.add(id)) return Result.Refused("duplicate quest $id")
                 validateQuest(q.jsonObject)?.let { return Result.Refused("$it in $id") }
             }
+            val screens = pack["screens"]?.jsonArray ?: JsonArray(emptyList())
+            if (screens.size > 50) return Result.Refused("too many screens")
+            val sids = HashSet<String>()
+            for (s in screens) {
+                val id = s.jsonObject["id"]?.jsonPrimitive?.content ?: return Result.Refused("screen without id")
+                if (!sids.add(id)) return Result.Refused("duplicate screen $id")
+                validateScreen(s.jsonObject)?.let { return Result.Refused("$it in screen $id") }
+            }
+            if (quests.isEmpty() && screens.isEmpty()) return Result.Refused("empty pack")
             Result.Ok(version, pack)
         } catch (_: Exception) {
             Result.Refused("malformed pack")
+        }
+    }
+
+    /** Verifies a keyring: the new trusted set, signed by a currently trusted key, with a newer version. */
+    fun verifyKeyring(bundle: Bundle, body: JsonElement, installedVersion: Int, trusted: List<ByteArray>): KeyringResult {
+        if (!fromTrusted(bundle, trusted)) return KeyringResult.Refused("source is not a trusted key")
+        return try {
+            val signed = body.jsonObject
+            val kr = signed["keyring"]!!.jsonObject
+            val sig = unhex(signed["sig"]!!.jsonPrimitive.content)
+            if (kr["name"]?.jsonPrimitive?.content != KEYRING_NAME) return KeyringResult.Refused("wrong keyring name")
+            val version = kr["version"]!!.jsonPrimitive.int
+            if (version <= installedVersion) return KeyringResult.Refused("not newer than installed keyring (rollback refused)")
+            val keys = kr["keys"]!!.jsonArray.map { it.jsonPrimitive.content }
+            if (keys.isEmpty() || keys.size > MAX_KEYS) return KeyringResult.Refused("keyring must hold 1 to $MAX_KEYS keys")
+            if (keys.any { it.length != 64 || !it.all { c -> c in '0'..'9' || c in 'a'..'f' } }) return KeyringResult.Refused("bad key")
+            if (keys.toSet().size != keys.size) return KeyringResult.Refused("duplicate key")
+            if (!trustedSigner(trusted, ("collapse-keyring-v1|" + canonical(kr)).toByteArray(), sig)) return KeyringResult.Refused("not signed by a trusted key")
+            KeyringResult.Ok(version, keys)
+        } catch (_: Exception) {
+            KeyringResult.Refused("malformed keyring")
         }
     }
 
@@ -82,6 +120,35 @@ object Packs {
                 }
                 "record" -> Unit
                 else -> return "bad stage kind"
+            }
+            val text = o["text"]?.jsonPrimitive?.content ?: ""
+            if (text.isEmpty() || text.length > 200) return "bad stage text"
+        }
+        return null
+    }
+
+    /** A screen is a list of content blocks drawn by the app. Packs cannot ship code, only these block types. */
+    internal fun validateScreen(s: JsonObject): String? {
+        if (!ID.matches(s["id"]?.jsonPrimitive?.content ?: "")) return "bad screen id"
+        val title = s["title"]?.jsonPrimitive?.content ?: ""
+        if (title.isEmpty() || title.length > 80) return "bad screen title"
+        val blocks = s["blocks"]?.jsonArray ?: return "screen has no blocks"
+        if (blocks.isEmpty() || blocks.size > 20) return "need 1-20 blocks"
+        for (b in blocks) {
+            val o = b.jsonObject
+            when (o["type"]?.jsonPrimitive?.content) {
+                "text" -> if ((o["text"]?.jsonPrimitive?.content ?: "").let { it.isEmpty() || it.length > 500 }) return "bad text block"
+                "list" -> {
+                    val items = o["items"]?.jsonArray ?: return "bad list block"
+                    if (items.size > 20 || items.any { (it.jsonPrimitive.content).let { t -> t.isEmpty() || t.length > 200 } }) return "bad list block"
+                }
+                "quest" -> if (!ID.matches(o["questId"]?.jsonPrimitive?.content ?: "")) return "bad quest link"
+                "link" -> {
+                    if (!ID.matches(o["screenId"]?.jsonPrimitive?.content ?: "")) return "bad screen link"
+                    val label = o["label"]?.jsonPrimitive?.content ?: ""
+                    if (label.isEmpty() || label.length > 60) return "bad link label"
+                }
+                else -> return "unknown block type"
             }
         }
         return null

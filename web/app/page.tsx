@@ -32,6 +32,7 @@ export default function Home() {
           </div>
         );
       })}
+      <p><a href="/screens/">News and updates</a></p>
       <h2>Scavenge</h2>
       <ScavengePanel />
     </>

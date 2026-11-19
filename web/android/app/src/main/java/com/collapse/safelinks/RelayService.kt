@@ -7,28 +7,25 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
 import androidx.core.app.NotificationCompat
+import com.collapse.safelinks.content.Packs
+import com.collapse.safelinks.content.Trust
 import com.collapse.safelinks.dtn.*
 import com.collapse.safelinks.sync.Node
 import com.collapse.safelinks.sync.SyncProtocol
 import com.collapse.safelinks.transport.BleBeacon
-import com.collapse.safelinks.transport.WifiDirectSync
+import com.collapse.safelinks.transport.GattSync
 import kotlinx.serialization.json.*
-import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Foreground relay: keeps BLE presence and Wi-Fi Direct sync running with the app closed.
- * Shows a persistent notification, so relaying is always visible to the user.
+ * Foreground relay: BLE presence, GATT sync, and the message store, running with the app closed.
+ * A persistent notification makes relaying visible to the user at all times.
  */
 class RelayService : Service() {
     companion object {
         private const val CHANNEL = "relay"
         private const val NOTE_ID = 1
-        private const val DISCOVER_EVERY_MS = 5 * 60_000L
-        private const val MIN_GAP_MS = 60_000L
 
         @Volatile private var node: Node? = null
         @Volatile private var storage: Storage? = null
@@ -53,26 +50,15 @@ class RelayService : Service() {
 
         fun inbox(): JsonArray {
             val n = node ?: return JsonArray(emptyList())
-            synchronized(n) {
-                return JsonArray(n.store.inbox.map { it.toJson() })
-            }
+            synchronized(n) { return JsonArray(n.store.inbox.map { it.toJson() }) }
         }
 
         fun packVersion(): Int = node?.packVersion ?: (storage?.loadPack()?.first ?: 0)
         fun packJson(): JsonObject? = storage?.loadPack()?.second
     }
 
-    private val lastSync = ConcurrentHashMap<String, Long>()
-    private var lastDiscover = 0L
-    private val handler = Handler(Looper.getMainLooper())
-    private var wifi: WifiDirectSync? = null
+    private var gatt: GattSync? = null
     private var ble: BleBeacon? = null
-    private val periodic = object : Runnable {
-        override fun run() {
-            wifi?.discover()
-            handler.postDelayed(this, DISCOVER_EVERY_MS)
-        }
-    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -80,46 +66,41 @@ class RelayService : Service() {
         super.onCreate()
         val st = Storage(filesDir)
         storage = st
-        val (ver, _) = st.loadPack()
+        val (pv, _) = st.loadPack()
+        val trust = Trust { st.loadKeyring() }
         val n = Node(
             identity = st.identity(),
             store = st.loadStore(),
-            maintainerPub = Content.MAINTAINER_PUB,
-            baseIds = Content.BASE_IDS,
-            packVersion = ver,
+            trust = { trust.current() },
+            packVersion = pv,
+            keyringVersion = trust.version(),
             onPack = { v, pack -> st.savePack(v, pack) },
+            onKeyring = { v, keys -> st.saveKeyring(v, keys) },
             save = { st.saveStore(it) },
         )
         node = n
-        wifi = WifiDirectSync(
+        gatt = GattSync(
             this,
-            runSession = { i, o -> synchronized(n) { SyncProtocol.run(i, o, n, System.currentTimeMillis() / 1000) } },
-            onDone = { r -> lastSync[r.peerAddr] = System.currentTimeMillis() },
+            runSync = { i, o -> synchronized(n) { SyncProtocol.run(i, o, n, System.currentTimeMillis() / 1000) } },
+            onDone = { },
         )
-        ble = BleBeacon(this, n.identity.signPub) { _ -> maybeDiscover() }
+        val myShort = n.identity.signPub.copyOf(8)
+        ble = BleBeacon(this, myShort) { peer, device ->
+            if (GattSync.initiates(myShort, peer)) gatt?.connectTo(device, System.currentTimeMillis())
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         createChannel()
         startForeground(NOTE_ID, notification())
-        wifi?.start()
+        gatt?.startServer()
         ble?.start()
-        handler.removeCallbacks(periodic)
-        handler.postDelayed(periodic, DISCOVER_EVERY_MS)
         return START_STICKY
     }
 
-    private fun maybeDiscover() {
-        val now = System.currentTimeMillis()
-        if (now - lastDiscover < MIN_GAP_MS) return
-        lastDiscover = now
-        wifi?.discover()
-    }
-
     override fun onDestroy() {
-        handler.removeCallbacks(periodic)
         ble?.stop()
-        wifi?.stop()
+        gatt?.stop()
         super.onDestroy()
     }
 
