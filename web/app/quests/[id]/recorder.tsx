@@ -11,7 +11,7 @@ const TRAIL_MS = 2000; // spec 1.3: GPS trail every 2 s
  * In-app camera only (spec constraint 6). No file import: the page never reads gallery files.
  * Browsers cannot set FLAG_SECURE, so screen capture is blocked only by the OS, not by this page.
  */
-export function QuestRecorder({ questId, title, description }: { questId: string; title: string; description: string }) {
+export function QuestRecorder({ questId, title, description, onRecorded }: { questId: string; title: string; description: string; onRecorded?: () => void }) {
   const [phase, setPhase] = useState<"idle" | "recording" | "done" | "error">("idle");
   const [secs, setSecs] = useState(0);
   const [preview, setPreview] = useState<string | null>(null);
@@ -50,6 +50,7 @@ export function QuestRecorder({ questId, title, description }: { questId: string
         saveState(s);
         setPhase("done");
         setMsg("Recorded. Evidence waits for review before rewards count.");
+        onRecorded?.();
         narr.say("Recording saved. It waits for review.");
         stopAll();
       };

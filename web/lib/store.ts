@@ -1,7 +1,8 @@
 // Per-device state. Browser localStorage, wrapped so the app still renders without it.
 // This is a prototype store: it is not encrypted and not server-verified (see docs/).
 import type { CommodityId } from "./game";
-import { newIdentity } from "./trade";
+import nacl from "tweetnacl";
+import { newIdentity, toHex } from "./trade";
 
 export type Inventory = Record<CommodityId, number>;
 
@@ -32,7 +33,8 @@ export interface State {
   receipts: Receipt[];
   evidence: Evidence[];
   narration: { enabled: boolean; rate: number };
-  identity: { pub: string; sec: string } | null;
+  identity: { pub: string; sec: string; boxPub?: string; boxSec?: string } | null;
+  progress: Record<string, number>; // quest id -> completed stages
 }
 
 export const COMMODITIES: CommodityId[] = ["grain", "water", "fuel", "tools", "medicine"];
@@ -48,6 +50,7 @@ export function emptyState(): State {
     evidence: [],
     narration: { enabled: false, rate: 1 },
     identity: null,
+    progress: {},
   };
 }
 
@@ -69,7 +72,10 @@ export function saveState(s: State): void {
   }
 }
 
-/** Creates the device identity on first use (Ed25519, prototype: stored in localStorage). */
+/** Creates the device identity on first use: an Ed25519 signing key (trades, DTN source) and an X25519 box key (DTN encryption). */
 export function ensureIdentity(s: State): State {
-  return s.identity ? s : { ...s, identity: newIdentity() };
+  if (s.identity?.boxPub && s.identity.boxSec) return s;
+  const base = s.identity ?? newIdentity();
+  const box = nacl.box.keyPair();
+  return { ...s, identity: { ...base, boxPub: toHex(box.publicKey), boxSec: toHex(box.secretKey) } };
 }
