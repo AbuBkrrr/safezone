@@ -13,6 +13,7 @@ import { loadDtn, saveDtn } from "@/lib/dtn/state";
 import { installPack } from "@/lib/content";
 import { isMaintainerPack, PACK_KIND, type SignedPack } from "@/lib/dtn/packs";
 import { MAINTAINER_PUB } from "@/lib/dtn/maintainer";
+import { NativeMessages, isNative } from "@/components/NativeMessages";
 
 type Msg =
   | { t: "hello"; pub: string; addr: string }
@@ -63,6 +64,8 @@ export default function TransferPage() {
   const pendingRef = useRef<Pending[]>([]);
   const peerRef = useRef<{ pub: string; addr: string } | null>(null);
   const narr = useNarration();
+  const [native, setNative] = useState(false);
+  useEffect(() => setNative(isNative()), []);
 
   useEffect(() => {
     const next = ensureIdentity(loadState());
@@ -398,6 +401,7 @@ export default function TransferPage() {
 
       {status && <p className={`msg ${status.ok ? "good" : "bad"}`} role="status" aria-live="polite">{status.text}</p>}
 
+      {native ? <NativeMessages /> : (<>
       <h2>Messages</h2>
       <div className="card">
         <div className="muted">Your address (share it so others can message you)</div>
@@ -420,6 +424,8 @@ export default function TransferPage() {
           </div>
         ))}
       </div>
+
+      </>)}
 
       {role !== "none" && <button className="btn ghost" type="button" onClick={() => { channelRef.current?.close(); channelRef.current = null; setConnected(false); setRole("none"); setOfferCode(""); setAnswerCode(""); setQrSrc(""); setPeerPub(null); peerRef.current = null; setPendingBoth([]); }}>End session</button>}
       <p className="muted code" style={{ marginTop: 16 }}>{s.identity ? `Your key ${s.identity.pub.slice(0, 16)}…` : ""}</p>

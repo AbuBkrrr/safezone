@@ -1,4 +1,5 @@
 apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
 
 android {
     namespace "com.collapse.safelinks"
@@ -31,6 +32,12 @@ repositories {
 }
 
 dependencies {
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.24"
+    implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3"
+    implementation "org.bouncycastle:bcprov-jdk18on:1.78.1"
+    implementation "androidx.core:core-ktx:1.12.0"
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.jetbrains.kotlinx:kotlinx-serialization-json-jvm:1.6.3"
     implementation fileTree(include: ['*.jar'], dir: 'libs')
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
@@ -51,4 +58,8 @@ try {
     }
 } catch(Exception e) {
     logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}
+
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+    kotlinOptions { jvmTarget = "17" }
 }
